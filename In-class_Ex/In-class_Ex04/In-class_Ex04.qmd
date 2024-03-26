@@ -1,0 +1,106 @@
+---
+title: "In-class Exercise 4: Spatial Weights and Applications"
+execute: 
+  warning: false
+  freeze: true
+date: "`r Sys.Date()`"
+---
+
+```{r}
+pacman::p_load(sf, spdep, tmap, tidyverse, knitr, GWmodel)
+```
+
+# 8.3 Getting the Data Into R Environment
+
+```{r}
+hunan <- st_read(dsn = "data/geospatial", 
+                 layer = "Hunan")
+
+hunan2012 <- read_csv("data/aspatial/Hunan_2012.csv")
+```
+
+```{r}
+hunan <- left_join(hunan,hunan2012)%>%
+  select(1:4, 7, 15)
+```
+
+```{r}
+basemap <- tm_shape(hunan) +
+  tm_polygons() +
+  tm_text("NAME_3", size=0.5)
+
+gdppc <- qtm(hunan, "GDPPC")
+
+#combining the maps (basemap + gdppc)
+tmap_arrange(basemap, gdppc, asp=1, ncol=2)
+```
+
+Notes: - The quicker way to generate the mayp, but it cannot be customized. The tm_fill function needs to be used in order to change the color, title etc. - For tm_text, "NAME_3" is the title and 0.5 is the size.
+
+## Computing (QUEEN) contiguity based neighbours
+
+```{r}
+wm_q <- poly2nb(hunan, queen=TRUE)
+summary(wm_q)
+```
+
+Observations: - Top row: number of neighbors - Bottom row: number of the regions - It suggests that region 85 is the one with 11 links.
+
+## Creating (ROOK) contiguity based neighbour
+
+To compute Rook contiguity weight matrix:
+
+```{r}
+wm_r <- poly2nb(hunan, queen=FALSE)
+summary(wm_r)
+```
+
+## Determine the cut-off distance
+
+```{r}
+longitude <- map_dbl(hunan$geometry, ~st_centroid(.x)[[1]])
+latitude <- map_dbl(hunan$geometry, ~st_centroid(.x)[[2]])
+coords <- cbind(longitude, latitude)
+```
+
+Derive the longitude and latitude and put it into cords.
+
+```{r}
+#coords <- coordinates(hunan)
+k1 <- knn2nb(knearneigh(coords))
+k1dists <- unlist(nbdists(k1, coords, longlat = TRUE))
+summary(k1dists)
+```
+
+Note: nbdist is used to return the neighbor list based on the distance.
+
+```{r}
+wm_d62 <- dnearneigh(coords, 0, 62, longlat = TRUE)
+wm_d62
+```
+
+Note: longlat = TRUE is very important, else it will not return any neighbor.
+
+```{r}
+hunan_sp <- hunan %>%
+  as_Spatial()
+```
+
+```{r}
+gwstat <- gwss(data = hunan_sp,
+               vars = "GDPPC",
+               bw = 6,
+               kernel = "bisquare",
+               adaptive = TRUE,
+               longlat = T)
+```
+
+Note: - 6 indicates that there are 6 neighbours
+
+```{r}
+#View(gwstat)
+```
+
+```{r}
+#View(gwstat[['SDF]]@data)
+```

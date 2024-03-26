@@ -1,0 +1,87 @@
+---
+title: "In-class Exe 2: R for Geospatial Data Science"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+execute: 
+  eval: true
+  echo: true
+  warning: false
+  freeze: true
+editor: visual
+---
+
+## Loading R package
+
+Note: Load all of the libraries that you will use here within the bracket.
+
+```{r}
+pacman::p_load(arrow, lubridate, sf, tmap, tidyverse)
+```
+
+## Importing Grab-Posisi Dataset
+
+```{r}
+df <- read_parquet("data/GrabPosisi/part-00000-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+```
+
+## To convert the data type of pingtimestamp from character to date-time.
+
+Change the characteristics of the field to a datetimefield, but re-writing it into the same field.
+
+```{r}
+df$pingtimestamp <- as_datetime(df$pingtimestamp)
+```
+
+To-do: - extract trip's origin locations - derive 3 new columns (ie.variables) for weekday, starting hour and day of the month - name the output tibble data.frame origin_df
+
+```{r}
+origin_df <- df %>%
+  group_by(trj_id) %>%
+  arrange(pingtimestamp) %>%
+  filter(row_number()==1) %>%
+  mutate(weekday = wday(pingtimestamp,
+                        label=TRUE,
+                        abbr=TRUE),
+         start_hr = factor(hour(pingtimestamp)),
+         day = factor(mday(pingtimestamp)))
+```
+
+wday: weekday mday: month of day abbr: abbreviation of the labels - time is being put in my hour, minute, seconds
+
+## Extracting Trip Ending Locations
+
+```{r}
+destination_df <- df %>%
+  group_by(trj_id) %>%
+  arrange(desc(pingtimestamp)) %>%
+  filter(row_number()==1) %>%
+  mutate(weekday = wday(pingtimestamp,
+                        label=TRUE,
+                        abbr=TRUE),
+         end_hr = factor(hour(pingtimestamp)),
+         day = factor(mday(pingtimestamp)))
+```
+
+The function desc() is being added so that the last timing will be filtered to the top.
+
+## Export data
+
+Saving the file in a datafile object.
+
+```{r}
+#|echo: false
+#|eval: false
+write_rds(origin_df, "data/rds/origin_df.rds")
+write_rds(destination_df, "data/rds/destination_df.rds")
+```
+
+## Import data
+
+```{r}
+origin_df <- read_rds("data/rds/origin_df.rds")
+destination_df <- read_rds("data/rds/destination_df.rds")
+```
+
+## Visualising frequency distribution

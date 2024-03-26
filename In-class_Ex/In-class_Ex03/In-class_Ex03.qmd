@@ -1,0 +1,171 @@
+---
+title: "In-class_Ex03"
+execute: 
+  warning: false
+  freeze: true
+date: "`r Sys.Date()`"
+---
+
+# Getting Started
+
+## Installing and loading R package
+
+In this section, I will install and load tidyverse and sf packages.
+
+```{r}
+#| eval: false
+install.packages("maptools", repos = "https://packagemanager.posit.co/cran/2023-10-13")
+```
+
+```{r}
+pacman::p_load(maptools, sp, sf, raster, spatstat, tmap, classInt, viridis, tidyverse, rgdal, spNetwork)
+```
+
+# Spatial Data Wrangling
+
+# Importing the spatial data
+
+Important to know the projection system so that the data set can be used appropriately and to prevent any data issue.
+
+The childcare dataset needs to be transformed as the crs was originally in WGS 84 (uses a geographic coordinate system with latitude and longitude values in degrees) and it needs to be changed to EPSG 3414 (uses a projected coordinate system with x and y values in meters).
+
+```{r}
+childcare_sf <- st_read("data/geospatial/child-care-services-geojson.geojson") %>%
+  st_transform(crs = 3414)
+```
+
+```{r}
+mpsz_sf <- st_read(dsn = "data/geospatial", layer = "MP14_SUBZONE_WEB_PL")
+```
+
+Plotting mpsz:
+
+```{r}
+plot(mpsz_sf)
+```
+
+We can create coastal outline from the MP14_SUBZONE data set: st_combin(): does not dissolve the boundary, only combines the polygons st_union: will dissolve the boundary union, but can choose which specific attributes we want to dissolve (eg. subzones or planning zone)
+
+```{r}
+sg_sf <- mpsz_sf %>%
+  st_union() 
+```
+
+```{r}
+plot(sg_sf)
+```
+
+# Geospatial Data Wrangling
+
+### Creating ppp objects: sf method
+
+The sf layer has to be used in order for the 3 data class change steps to be skipped and to arrive at the ppp layer directly.
+
+```{r}
+childcare_ppp <- as.ppp(childcare_sf)
+```
+
+```{r}
+summary(childcare_ppp)
+```
+
+### Handling duplicated points
+
+We can check the duplication in a ***ppp*** object by using the code chunk below.
+
+```{r}
+any(duplicated(childcare_ppp))
+```
+
+Note: Some postal codes in SG uses the same postal code which could result in multiple data points at the same location. Therefore, it is good to check for duplications and then remove them if necessary.
+
+### Creating ***owin*** object: sf method
+
+```{r}
+sg_owin <- as.owin(sg_sf)
+```
+
+Note: The input has to be a sf layer. All functions that make use of "as." has to use an sf layer.
+
+The output object can be displayed by using *plot* function.
+
+```{r}
+plot(sg_owin)
+```
+
+To filter out the areas that we want from the sf layer to use the diplyr filter:
+
+```{r}
+pg <- mpsz_sf %>%
+  filter(PLN_AREA_N == "PUNGGOL")
+tm <- mpsz_sf %>%
+  filter(PLN_AREA_N == "TAMPINES")
+ck <- mpsz_sf %>%
+  filter(PLN_AREA_N == "CHOA CHU KANG")
+jw <- mpsz_sf %>%
+  filter(PLN_AREA_N == "JURONG WEST")
+```
+
+Plotting target planning areas
+
+```{r fig.width=16, fig.height=10}
+par(mfrow=c(2,2))
+plot(pg, main = "Punggol")
+plot(tm, main = "Tampines")
+plot(ck, main = "Choa Chu Kang")
+plot(jw, main = "Jurong West")
+```
+
+Note: main just means that the label will be added to the map.
+
+**sf** package to important Punggol_St and Punggol_CC geospatial data sets into RStudio as sf data frames.
+
+```{r}
+network <- st_read(dsn="data/geospatial", 
+                   layer="Punggol_St")
+childcare <- st_read(dsn="data/geospatial", 
+                     layer="Punggol_CC")
+```
+
+cartographic quality and interactive manner, the mapping function can be shown
+
+```{r}
+tmap_mode('view')
+tm_shape(childcare) +
+  tm_dots() +
+  tm_shape(network) + 
+  tm_lines()
+tmap_mode('plot')
+```
+
+```{r}
+lixels <- lixelize_lines(network,
+                         750,
+                         mindist = 375)
+```
+
+### Generating line centre points
+
+```{r}
+samples <- lines_center(lixels)
+```
+
+```{r}
+densities <- nkde(network, 
+                  events = childcare,
+                  w = rep(1,nrow(childcare)),
+                  samples = samples,
+                  kernel_name = "quartic",
+                  bw = 300, 
+                  div= "bw", 
+                  method = "simple", 
+                  digits = 1, 
+                  tol = 1,
+                  grid_shape = c(1,1), 
+                  max_depth = 8,
+                  agg = 5, #we aggregate events within a 5m radius (faster calculation)
+                  sparse = TRUE,
+                  verbose = FALSE)
+```
+
+3 inputs to calibrate the line: 1. lixels: 2. network: 3. samples: used to segment the road

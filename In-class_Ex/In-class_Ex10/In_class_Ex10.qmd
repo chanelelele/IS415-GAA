@@ -1,0 +1,8 @@
+---
+title: "In-class Exe 10: "
+execute: 
+  warning: false
+date: "`r Sys.Date()`"
+---
+
+
