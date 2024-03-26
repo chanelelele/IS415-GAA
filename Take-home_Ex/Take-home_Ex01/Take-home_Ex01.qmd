@@ -1,0 +1,960 @@
+---
+title: "Take-home Exercise 1: Application of Spatial Point Patterns Analysis to discover the geographical distribution of Grab hailing services in Singapore"
+execute: 
+  warning: false
+  freeze: true
+date: "`r Sys.Date()`"
+---
+
+# 1 Introduction
+
+## 1.1 Setting the Scene
+
+Human mobility, the movement of human beings in space and time, reflects the spatial-temporal characteristics of human behavior. With the advancement Information and Communication Technologies (ICT) especially smart phone, a large volume of data related to human mobility have been collected. By using appropriate GIS analysis methods, these data are potentially useful in supporting smart city planning and management.
+
+In Singapore, one of the important source of data related to human mobility is from Land Transport Authority (LTA) DataMall. Two data sets related to human mobility are provided by the portal, they are: Passenger Volume by Origin Destination Train Stations and Passenger Volume by Origin Destination Bus Stops. One of the limitation of these data sets is that their location are biased to either bus stops or MRT/LRT stations. In 2020, another very interesting human mobility data set called Grab Posisi was released by GRAB, one of the largest shared taxi operator in South-east Asia. There are two data sets been released and one of them is for Singapore.
+
+## 1.2 Objectives
+
+Geospatial analytics hold tremendous potential to address complex problems facing society. In this study, you are tasked to apply appropriate spatial point patterns analysis methods to discover the geographical and spatio-temporal distribution of Grab hailing services locations in Singapore.
+
+## 1.3 Tasks
+
+The specific tasks of this take-home exercise are as follows:
+
+-   Using appropriate function of sf and tidyverse, preparing the following geospatial data layer in sf tibble data.frames:
+
+    -   Grab taxi location points either by origins or destinations.
+
+    -   Road layer within Singapore excluding outer islands.
+
+-   Singapore boundary layer excluding outer islands
+
+-   Using the extracted data, derive traditional Kernel Density Estimation layers.
+
+-   Using the extracted data, derive either Network Kernel Density Estimation (NKDE) or Temporal Network Kernel Density Estimation (TNKDE)
+
+-   Using appropriate tmap functions, display the kernel density layers on openstreetmap of Singapore.
+
+-   Describe the spatial patterns revealed by the kernel density maps.
+
+## 1.4 Data
+
+### Aspatial Data
+
+-   Grab-Posisi of Singapore
+
+### Geospatial Data
+
+-   Road data set from OpenStreetMap of Geofabrik download server. The [Malaysia, Singapore, and Brunei coverage](https://download.geofabrik.de/asia/malaysia-singapore-brunei.html "Geofabrik OSM of Malaysia, Singapore and Brunei")
+-   Master Plan 2019 Subzone Boundary (No Sea) from Data.gov.sg
+
+# 2 Preparing the data
+
+## 2.1 Loading the packages
+
+These are the following packages that are being loaded in:
+
+-   sf: Desgined to import, manage and process vector-based geospatial data in R.
+
+-   spatstat: Wide range of useful functions for point pattern analysis.
+
+-   raster: reads, writes, manipulates, analyses and model of gridded spatial data (i.e. raster)
+
+-   maptools: Provides a set of tools for manipulating geographic data.
+
+-   tmap: Provides functions for plotting cartographic quality static point patterns maps or interactive maps by using leaflet API.
+
+-   lubridate: Makes it easier to do the things R does with date-times.
+
+-   arrow: exposes an interface to the Arrow C++ library, enabling access to many of its features in R.s
+
+```{r}
+pacman::p_load(arrow, lubridate, maptools, sp, sf, raster, spatstat, tmap, classInt, viridis, tidyverse, spNetwork)
+```
+
+## 2.2 Importing the data
+
+Preparing the geospatial data layer in sf tibble data.frames. The tibble package provides opinionated data frames that will make working in the tidyverse easier.
+
+### 2.2.1 Importing Grab data
+
+The grab data set is extremely big. Therefore, the following code chunks are used to import in all the grab data before appending them together.
+
+```{r}
+grab_00_df <- read_parquet("data/aspatial/GrabPosisi/part-00000-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_01_df <- read_parquet("data/aspatial/GrabPosisi/part-00001-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_02_df <- read_parquet("data/aspatial/GrabPosisi/part-00002-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_03_df <- read_parquet("data/aspatial/GrabPosisi/part-00003-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_04_df <- read_parquet("data/aspatial/GrabPosisi/part-00004-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_05_df <- read_parquet("data/aspatial/GrabPosisi/part-00005-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_06_df <- read_parquet("data/aspatial/GrabPosisi/part-00006-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_07_df <- read_parquet("data/aspatial/GrabPosisi/part-00007-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_08_df <- read_parquet("data/aspatial/GrabPosisi/part-00008-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+
+grab_09_df <- read_parquet("data/aspatial/GrabPosisi/part-00009-8bbff892-97d2-4011-9961-703e38972569.c000.snappy.parquet")
+```
+
+```{r}
+grab_df <- rbind(grab_00_df, grab_01_df, grab_02_df, grab_03_df, grab_04_df, grab_05_df, grab_06_df, grab_07_df, grab_08_df, grab_09_df)
+```
+
+### 2.2.2 Importing Master Plan 2019 Subzone Boundary (No Sea) data
+
+Next, the Master Plan 2019 Subzone Boundary (No Sea) geospatial data set will be imported using **st_read()** of the sf package.
+
+```{r}
+mpsz_sf <- st_read(dsn = "data/geospatial/MPSZ", layer = "MPSZ-2019")
+```
+
+Features: 332 Fields: 6 Geometry Type: Multipolygon
+
+### 2.2.3 Removing the Outer Islands from Master Plan 2019 Subzone Boundary (No Sea) data
+
+To examine the Master Plan 2019 Subzone Boundary (No Sea) geospatial data set:
+
+```{r}
+plot(mpsz_sf)
+```
+
+As observed from the map, the main island has multiple surrounding islands. Examine the data tablle in order to identify the label names of the surrounding islands.
+
+The following code chunk is to remove the surrounding islands:
+
+```{r}
+new_mpsz_sf <- mpsz_sf[!(mpsz_sf$PLN_AREA_N %in% c("WESTERN ISLANDS", "SOUTHERN ISLANDS", "NORTH-EASTERN ISLANDS")), ]
+```
+
+### 2.2.4 Importing the road data set from OpenStreetMap (Malaysia, Singapore, Brunei)
+
+Next, the road data set from OpenStreetMap (Malaysia, Singapore, Brunei) will be imported using **st_read()** of the sf package.
+
+```{r}
+osm_roads <- st_read(dsn = "data/geospatial/gis_osm_roads_free_1.shp")
+```
+
+## 2.3 Preparing the geospatial data layer
+
+### 2.3.1 Checking the Content of the MP19 Simple Feature Data Frame
+
+#### 2.3.1.1 Displaying basic information of the MP19 feature class
+
+**st_geometry()** of the sf package is used to extract and return the geometry component of the object.
+
+```{r}
+st_geometry(new_mpsz_sf)
+```
+
+#### 2.3.1.2 To learn more about the associated attribute information in the dataframe
+
+**glimpse()** of the dplyr package is used to l display a concise summary of the structure of the object.
+
+```{r}
+glimpse(new_mpsz_sf)
+```
+
+#### 2.3.1.3 To reveal complete information of a feature object
+
+To view the first 5 rows of a feature object:
+
+```{r}
+head(new_mpsz_sf, n=5)  
+```
+
+#### 2.3.1.4 Plotting the Geospatial data
+
+```{r}
+plot(new_mpsz_sf)
+```
+
+```{r}
+plot(st_geometry(new_mpsz_sf))
+```
+
+```{r}
+plot(new_mpsz_sf["PLN_AREA_N"])
+```
+
+#### 2.3.1.5 Assigning the EPSG Projection to the MP19 Data Frame
+
+```{r}
+st_crs(new_mpsz_sf)
+```
+
+The current CRS being used is WGS84, which is for lat/long specifications, while EPSG is a database for CRS and related information.
+
+The following code chunk changes the CRS to EPSG 3414:
+
+```{r}
+mpsz3414 <- st_transform(new_mpsz_sf, 3414)
+```
+
+```{r}
+st_crs(mpsz3414)
+```
+
+### 2.3.2 Preparing the osm_roads Layer
+
+#### 2.3.2.1 Basic information of the OSM Roads layer
+
+```{r}
+st_geometry(osm_roads)
+```
+
+#### 2.3.2.2 Assigning the EPSG Projection to the OSM Roads layer
+
+```{r}
+st_crs(osm_roads)
+```
+
+Similarly, the output showed that the CRS being used is WGS84. Therefore, it needs to be changed to 3414 too.
+
+```{r}
+roads3414 <- st_transform(osm_roads, 3414)
+```
+
+```{r}
+st_crs(roads3414)
+st_crs(mpsz3414)
+```
+
+#### 2.3.2.3 Retrieving the roads layer within Singapore
+
+In the following code chunk, **st_intersection()** of the sf package and is used to extract parts of the the road geometries that intersect with the given region.
+
+```{r}
+sg_roads <- st_intersection(roads3414, mpsz3414)
+```
+
+```{r}
+plot(sg_roads)
+```
+
+## 2.4 Preparing the Grab Data
+
+```{r}
+glimpse(grab_df)
+```
+
+As observed, the pingtimestamp is in the wrong data type format. It should be in date/time format and not integer.
+
+### 2.4.1 Adding Timestamp to the Grab datapoints
+
+Code chunk to convert the data type of pingtimestamp from character to date-time:
+
+```{r}
+grab_df$pingtimestamp <- as_datetime(grab_df$pingtimestamp)
+```
+
+The following code chunk is used to save your object as an RDS file in R for storage:
+
+```{r}
+write_rds(grab_df, "data/aspatial/rds/part0.rds")
+```
+
+### 2.4.2 Preparing the Origin Grab taxi location points
+
+#### 2.4.2.1 Extracting the Origin locations
+
+The following code chunk extracts the trips' origin locations. It derives three new columns (i.e. variables) for weekday, starting hour and day of the month. It then names the output tibble dataframe origin_df.
+
+```{r}
+origin_df <- grab_df %>% 
+  group_by(trj_id) %>% 
+  arrange(pingtimestamp) %>% 
+  filter(row_number()==1) %>%
+  mutate(weekday = wday(pingtimestamp,
+                        label=TRUE,
+                        abbr=TRUE),
+         start_hr = factor(hour(pingtimestamp)),
+         day = factor(mday(pingtimestamp)))
+```
+
+Saving the df for future use:
+
+```{r}
+write_rds(origin_df, "data/aspatial/rds/origin_df.rds")
+```
+
+Importing the df:
+
+```{r}
+origin_df <- read_rds("data/aspatial/rds/origin_df.rds")
+```
+
+#### 2.4.2.2 Converting aspatial data into geospatial data
+
+Converting the origin dfs into a sf tibble data frame by using it's location information.
+
+```{r}
+origin_sf <- st_as_sf(origin_df,
+                      coords = c("rawlng", "rawlat"),
+                      crs = 4326) %>%
+  st_transform(crs = 3414)
+```
+
+#### 2.4.2.3 Visualising the data
+
+**ggplot** functions are used to reveal the distribution of origin trips by day of the week.
+
+Visualising frequency distribution:
+
+```{r}
+ggplot(data=origin_df, 
+       aes(x=weekday)) + 
+  geom_bar()
+```
+
+**tmap** functions are used to plot a point symbol map by using the origin trips locations.
+
+Visualising as Point Symbol Map:
+
+```{r}
+tmap_mode("plot")
+tm_shape(origin_sf) +
+  tm_dots()
+```
+
+# 3 Deriving the traditional Kernel Density Estimation layer
+
+## 3.1 Geospatial Data Wrangling
+
+### 3.1.1 Converting sf data frames into generic spatstat's ppp format
+
+The following code chunks are the 3 steps requried to convert the sf data frames into a generic spatstat's ppp format.
+
+The code chunk below uses **as_Spatial()** of sf package to convert the three geospatial data from simple feature data frame to sp’s Spatial\* class.
+
+```{r}
+origin <- as_Spatial(origin_sf)
+mpsz <- as_Spatial(mpsz_sf)
+mpsz2 <- as_Spatial(mpsz3414)
+```
+
+**spatstat** requires the analytical data in ppp object form. However, as there is no direct way to convert a Spatial\* classes into ppp object, the Spatial classes\* need to be converted into Spatial objects first.
+
+```{r}
+origin_sp <- as(origin, "SpatialPoints")
+```
+
+Lastly, the **as.ppp()** function of spatstat is used to convert the spatial data into spatstat’s ppp object format.
+
+```{r}
+origin_ppp <- as.ppp(origin_sf)
+```
+
+```{r}
+origin_ppp
+```
+
+The following code chunks are used to examine the difference.
+
+```{r}
+plot(origin_ppp)
+```
+
+To examine the summary statistics of the newly created ppp object:
+
+```{r}
+summary(origin_ppp)
+```
+
+### 3.1.2 Handling duplicated points
+
+To check the duplication in a ppp object:
+
+```{r}
+any(duplicated(origin_ppp))
+```
+
+As observed, there are no duplicates in the ppp object.
+
+However, the **jittering** approach can be used to remove duplicates if necessary. It adds a small perturbation to the duplicate points so that they do not occupy the exact same space.
+
+```{r}
+origin_ppp_jit <- rjitter(origin_ppp, 
+                             retry=TRUE, 
+                             nsim=1, 
+                             drop=TRUE)
+```
+
+### 3.1.3 Creating Coastal Outline
+
+```{r}
+sg_sf <- mpsz3414 %>%
+  st_union()
+```
+
+```{r}
+plot(sg_sf)
+```
+
+### 3.1.4 Creating owin object
+
+In the spatstat package, **owin** objects are used to rrepresent polygonal regions such as the Singapore boundary geographical area.
+
+The code chunk below is used to covert sg SpatialPolygon object into owin object of spatstat:
+
+```{r}
+sg_owin <- as.owin(sg_sf)
+```
+
+## 3.1.5 Combining point events object and owin object
+
+Extracting grab points that are located within Singapore by using the code chunk below.
+
+```{r}
+originSG_ppp = origin_ppp[sg_owin]
+```
+
+The output object would then combine both the point and polygon feature in one ppp object class as shown below.
+
+```{r}
+summary(originSG_ppp)
+```
+
+```{r}
+plot(originSG_ppp)
+```
+
+## 3.2 First-order Spatial Point Patterns Analysis
+
+### 3.2.1 Kernel Density Estimation
+
+Deriving kernel density estimation (KDE) layer for visualising and exploring the intensity of point processes using spatstat package.
+
+#### 3.2.1.1 Computing kernel density estimation using automatic bandwidth selection method
+
+The code chunk below computes a kernel density by using the following configurations of **density()** of spatstat.
+
+In addition, **bw.diggle()** is an automatic bandwidth selection method. It uses cross-validation to select a smoothing bandwidth for the kernel estimation of point process intensity.
+
+```{r}
+kde_originSG_bw <- density(originSG_ppp,
+                              sigma=bw.diggle,
+                              edge=TRUE,
+                            kernel="gaussian") 
+```
+
+To display the kernel density derived:
+
+```{r}
+plot(kde_originSG_bw)
+```
+
+The density values of the output range from 0 to 0.0015 which is way too small to comprehend. This is because the default unit of measurement of svy21 is in meter. As a result, the density values computed is in “number of points per square meter”.
+
+To retrieve the bandwidth:
+
+```{r}
+bw <- bw.diggle(originSG_ppp)
+bw
+```
+
+#### 3.2.1.2 Rescalling KDE value
+
+In the code chunk below, rescale() is used to covert the unit of measurement from meter to kilometer:
+
+```{r}
+originSG_ppp.km <- rescale(originSG_ppp, 1000, "km")
+```
+
+Re-running density() using the resale data set and plot the output kde map:
+
+```{r}
+kde_originSG.bw <- density(originSG_ppp.km, sigma=bw.diggle, edge=TRUE, kernel="gaussian")
+plot(kde_originSG.bw)
+```
+
+As observed, the output image looks identical to the earlier version, the only changes in the data values.
+
+### 3.2.2 Working with different automatic bandwidth methods
+
+**bw.ppl()** algorithm is being used to determine the bandwidth as it tends to produce the more appropriate values when the pattern consists predominantly of tight clusters.
+
+```{r}
+bw.ppl(originSG_ppp.km)
+```
+
+**bw.diggle()** method is to detect a single tight cluster in the midst of random noise.
+
+```{r}
+bw.diggle(originSG_ppp.km)
+```
+
+The code chunk beow will be used to compare the output of using bw.diggle and bw.ppl methods:
+
+```{r}
+kde_originSG.ppl <- density(originSG_ppp.km, 
+                               sigma=bw.ppl, 
+                               edge=TRUE,
+                               kernel="gaussian")
+par(mfrow=c(2,2), mar = c(4, 4, 2, 1))
+plot(kde_originSG.bw, main = "bw.diggle")
+plot(kde_originSG.ppl, main = "bw.ppl")
+```
+
+#### 3.2.3 Working with different kernel methods
+
+The code chunk below will be used to compute the three more kernel density estimations by using these three kernel functions: Epanechnikov, Quartic and Dics.
+
+```{r}
+par(mfrow=c(2,2), mar = c(4, 4, 2, 1))
+plot(density(originSG_ppp.km, 
+             sigma=bw.ppl, 
+             edge=TRUE, 
+             kernel="gaussian"), 
+     main="Gaussian")
+plot(density(originSG_ppp.km, 
+             sigma=bw.ppl, 
+             edge=TRUE, 
+             kernel="epanechnikov"), 
+     main="Epanechnikov")
+plot(density(originSG_ppp.km, 
+             sigma=bw.ppl, 
+             edge=TRUE, 
+             kernel="quartic"), 
+     main="Quartic")
+plot(density(originSG_ppp.km, 
+             sigma=bw.ppl, 
+             edge=TRUE, 
+             kernel="disc"), 
+     main="Disc")
+```
+
+Originally, it kept returning that the figure margins were too large. Therefore, I added the mar() to increase the plotting device size to allow more space for the plots. (can be adjusted according to preference)
+
+### 3.2.4 Fixed and Adaptive KDE
+
+#### 3.2.4.1 Computing KDE by using fixed bandwidth
+
+```{r}
+kde_originSG_600 <- density(originSG_ppp.km, sigma=0.6, edge=TRUE, kernel="gaussian")
+plot(kde_originSG_600)
+```
+
+#### 3.2.4.2 Computing KDE by using adaptive bandwidth
+
+However, since fixed bandwidth method is very sensitive to highly skew distribution of spatial point patterns over geographical units, one way to overcome this problem is by using adaptive bandwidth instead.
+
+Deriving adaptive density estimation by using **density.adaptive()** of spatstat:
+
+```{r}
+kde_originSG_adaptive <- adaptive.density(originSG_ppp.km, method="kernel")
+plot(kde_originSG_adaptive)
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(kde_originSG.bw, main = "Fixed bandwidth")
+plot(kde_originSG_adaptive, main = "Adaptive bandwidth")
+```
+
+### 3.2.5 Converting KDE output into grid object.
+
+Converting it so that it is suitable for mapping purposes.
+
+```{r}
+gridded_kde_originSG_bw <- as.SpatialGridDataFrame.im(kde_originSG.bw)
+spplot(gridded_kde_originSG_bw)
+```
+
+#### 3.2.5.1 Converting gridded output into raster
+
+Converting the gridded kernel density objects into RasterLayer object by using **raster()** package.
+
+```{r}
+kde_originSG_bw_raster <- raster(gridded_kde_originSG_bw)
+```
+
+```{r}
+kde_originSG_bw_raster
+```
+
+As observed, the CRS is currently NA. Therefore, the code chunk below will be used to include the CRS information to EPSG 3414.
+
+Assigning projection systems:
+
+```{r}
+projection(kde_originSG_bw_raster) <- CRS("+init=EPSG:3414")
+kde_originSG_bw_raster
+```
+
+#### 3.2.5.2 Visualising the output in tmap
+
+Displaying the raster in cartographic quality map using **tmap** package:
+
+```{r}
+tm_shape(kde_originSG_bw_raster) + 
+  tm_raster("v") +
+  tm_layout(legend.position = c("right", "bottom"), frame = FALSE)
+```
+
+#### 3.2.6 Comparing Spatial Point Patterns using KDE
+
+Comparing the KDE of grab origins in Downtown Core, Serangoon, Orchard and Choa Chu Kang.
+
+#### 3.2.6.1 Extracting study area
+
+The code chunk below will be used to extract the target planning areas:
+
+```{r}
+dc = mpsz2[mpsz2@data$PLN_AREA_N == "DOWNTOWN CORE",]
+se = mpsz2[mpsz2@data$PLN_AREA_N == "SERANGOON",]
+or = mpsz2[mpsz2@data$PLN_AREA_N == "ORCHARD",]
+ck = mpsz2[mpsz2@data$PLN_AREA_N == "CHOA CHU KANG",]
+```
+
+Plotting target planning areas:
+
+```{r}
+par(mfrow=c(2,2), mar = c(4, 4, 2, 1))
+plot(dc, main = "Downtown Core")
+plot(se, main = "Serangoon")
+plot(or, main = "Orchard")
+plot(ck, main = "Choa Chu Kang")
+```
+
+#### 3.2.6.2 Converting the spatial point data frame into generic sp format
+
+Convert these SpatialPolygonsDataFrame layers into generic spatialpolygons layers:
+
+```{r}
+dc_sp = as(dc, "SpatialPolygons")
+se_sp = as(se, "SpatialPolygons")
+or_sp = as(or, "SpatialPolygons")
+ck_sp = as(ck, "SpatialPolygons")
+```
+
+#### 3.2.6.3 Creating owin object
+
+Converting these SpatialPolygons objects into owin objects that is required by spatstat:
+
+```{r}
+dc_owin = as(dc_sp, "owin")
+se_owin = as(se_sp, "owin")
+or_owin = as(or_sp, "owin")
+ck_owin = as(ck_sp, "owin")
+```
+
+#### 3.2.6.4 Combining origin points and the study area
+
+To extract the origin points that are within the specific region:
+
+```{r}
+origin_dc_ppp = origin_ppp_jit[dc_owin]
+origin_se_ppp = origin_ppp_jit[se_owin]
+origin_or_ppp = origin_ppp_jit[or_owin]
+origin_ck_ppp = origin_ppp_jit[ck_owin]
+```
+
+**rescale()** function is used to transform the unit of measurement from metre to kilometre:
+
+```{r}
+origin_dc_ppp.km = rescale(origin_dc_ppp, 1000, "km")
+origin_se_ppp.km = rescale(origin_se_ppp, 1000, "km")
+origin_or_ppp.km = rescale(origin_or_ppp, 1000, "km")
+origin_ck_ppp.km = rescale(origin_ck_ppp, 1000, "km")
+```
+
+To plot these four study areas and the locations of the origin points:
+
+```{r}
+par(mfrow=c(2,2), mar = c(4, 4, 2, 1))
+plot(origin_dc_ppp.km, main="Downtown Core")
+plot(origin_se_ppp.km, main="Serangoon")
+plot(origin_or_ppp.km, main="Orchard")
+plot(origin_ck_ppp.km, main="Choa Chu Kang")
+```
+
+#### 3.2.6.5 Computing KDE
+
+The code chunk below will be used to compute the KDE of these four planning areas. **bw.diggle** method is used to derive the bandwidth of each:
+
+```{r}
+par(mfrow=c(2,2), mar = c(4, 4, 2, 1))
+plot(density(origin_dc_ppp.km, 
+             sigma=bw.diggle, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Downtown Core")
+plot(density(origin_se_ppp.km, 
+             sigma=bw.diggle, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Serangoon")
+plot(density(origin_or_ppp.km, 
+             sigma=bw.diggle, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Orchard")
+plot(density(origin_ck_ppp.km, 
+             sigma=bw.diggle, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Choa Chu Kang")
+```
+
+#### 3.2.6.6 Computing fixed bandwidth KDE
+
+```{r}
+par(mfrow=c(2,2), mar = c(4, 4, 2, 1))
+plot(density(origin_dc_ppp.km, 
+             sigma=0.25, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Downtown Core")
+plot(density(origin_se_ppp.km, 
+             sigma=0.25, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Serangoon")
+plot(density(origin_or_ppp.km, 
+             sigma=0.25, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Orchard")
+plot(density(origin_ck_ppp.km, 
+             sigma=0.25, 
+             edge=TRUE, 
+             kernel="gaussian"),
+     main="Choa Chu Kang")
+```
+
+As observed, the fixed bandwidth used a constant smoothing parameter for the dataset while the regular KDE adjusts the bandwidth dynamically based on the local density of the data.
+
+From the fixed bandwdith KDE calculation, the contrast between the values are more significant. The graph suggests that Orchard area has the highest probability of origin points.
+
+### 3.2.7 Nearest Neighbour Analysis
+
+#### 3.2.7.1 Testing spatial point patterns using Clark and Evans Test
+
+Performing the Clark-Evans test of aggregation for a spatial point pattern by using **clarkevans.test()** of statspat:
+
+The test hypotheses are:
+
+Ho = The distribution of grab origin points are randomly distributed.
+
+H1= The distribution of grab origin points are not randomly distributed.
+
+The 95% confident interval will be used.
+
+```{r}
+clarkevans.test(originSG_ppp,
+                correction="none",
+                clipregion="sg_owin",
+                alternative=c("clustered"),
+                nsim=99)
+```
+
+**Analysis of results:**
+
+The test results suggest that there is evidence to reject the null hypothesis.
+
+The alternative hypothesis indicates clustering (R \< 1), which implies that the observed spatial pattern of points in the originSG_ppp data is significantly clustered.
+
+The low p-value (\< 2.2e-16) indicates a high level of statistical significance, reinforcing the conclusion that the clustering is not likely due to random chance.
+
+#### 3.2.7.2 Clark and Evans Test: Downtown Core planning area
+
+In the code chunk below, **clarkevans.test()** of spatstat is used to performs Clark-Evans test of aggregation for childcare centre in the Downtown Core planning area.
+
+```{r}
+clarkevans.test(origin_dc_ppp,
+                correction="none",
+                clipregion=NULL,
+                alternative=c("two.sided"),
+                nsim=999)
+```
+
+**Analysis of results:**
+
+The test results suggest to reject the null hypothesis. The alternative hypothesis implies that the spatial pattern of points in the origin_dc_ppp data is significantly different from a random distribution.
+
+The low p-value (\< 2.2e-16) indicates a high level of statistical significance, supporting the conclusion that the spatial pattern is not likely due to random chance.
+
+## 3.3 Network Kernel Density Estimation (NKDE)
+
+### 3.3.1 Extracting the data
+
+```{r}
+dc_sf <- st_as_sf(dc_sp)
+```
+
+```{r}
+dc_roads <- st_intersection(dc_sf, roads3414)
+```
+
+### 3.3.2 Visualising the Geospatial data
+
+```{r}
+plot(dc_roads)
+```
+
+Code chunk below can be used to print the content of Downtown Core roads SpatialLineDataFrame and Downtown Core SpatialPointsDataFrame by using the code chunk below.
+
+```{r}
+str(dc_sf)
+str(dc_roads)
+```
+
+To visualise the geospatial data with high cartographic quality and interactive manner, the mapping function of tmap package can be used as shown in the code chunk below:
+
+```{r}
+tmap_mode('view')
+tm_shape(dc_sf) + 
+  tm_dots() + 
+  tm_shape(dc_roads) +
+  tm_lines()
+```
+
+```{r}
+tmap_mode('plot')
+```
+
+### 3.3.3 Network Constrained KDE (NetKDE) Analysis
+
+Before creating the lixels objects, it is essential to note that the geometry type needs to be transformed to LINESTRING:
+
+```{r}
+dc_roads <- st_cast(dc_roads, "LINESTRING")
+dc_roads
+```
+
+#### 3.3.3.1 Preparing the lixels objects
+
+Before computing NetKDE, the SpatialLines object need to be cut into lixels with a specified minimal distance. This task can be performed by using with **lixelize_lines()** of spNetwork as shown in the code chunk below.
+
+```{r}
+lixels <- lixelize_lines(dc_roads, 
+                         700, 
+                         mindist = 350)
+```
+
+### 3.3.3.2 Generating line centre points
+
+Next, **lines_center()** of spNetwork is used to generate a SpatialPointsDataFrame (i.e. samples) with line centre points as shown in the code chunk below.
+
+```{r}
+samples <- lines_center(lixels)
+```
+
+The points are located at center of the line based on the length of the line.
+
+#### 3.3.3.3 Performing NetKDE
+
+Before computing NetKDE, it is essential to note that the geometry type needs to be transformed to points:
+
+```{r}
+st_geometry_type(dc_sf)
+```
+
+Convert polygons to points:
+
+```{r}
+dc_sf_points <- st_centroid(dc_sf)
+```
+
+Check the geometry type after conversion:
+
+```{r}
+st_geometry_type(dc_sf_points)
+```
+
+Computing NetKDE:
+
+```{r}
+densities <- nkde(dc_roads, 
+                  events = dc_sf_points,
+                  w = rep(1,nrow(dc_sf_points)),
+                  samples = samples,
+                  kernel_name = "quartic",
+                  bw = 300, 
+                  div= "bw", 
+                  method = "simple", 
+                  digits = 1, 
+                  tol = 1,
+                  grid_shape = c(1,1), 
+                  max_depth = 8,
+                  agg = 5, #we aggregate events within a 5m radius (faster calculation)
+                  sparse = TRUE,
+                  verbose = FALSE)
+```
+
+#### 3.3.3.4 Visualising NetKDE
+
+Before visualising the NetKDE values, the code chunk below will be used to insert the computed density values (i.e. densities) into samples and lixels objects as density field.
+
+```{r}
+samples$density <- densities
+lixels$density <- densities
+```
+
+Since svy21 projection system is in meter, the computed density values are very small i.e. 0.0000005. The code chunk below is used to resale the density values from number of events per meter to number of events per kilometer.
+
+```{r}
+# rescaling to help the mapping
+samples$density <- samples$density*1000
+lixels$density <- lixels$density*1000
+```
+
+The code below uses appropriate functions of tmap package to prepare interactive and high cartographic quality map visualisation.
+
+```{r}
+tmap_mode('view')
+tm_shape(lixels)+
+  tm_lines(col="density")+
+tm_shape(dc_sf_points)+
+  tm_dots()
+```
+
+```{r}
+tmap_mode('plot')
+```
+
+The interactive map above effectively reveals road segments (darker color) with relatively higher density of origin points than road segments with relatively lower density of origin points (lighter color).
+
+### 3.3.4 Network Constrained G- and K-Function Analysis
+
+Performing complete spatial randomness (CSR) test by using kfunctions() of spNetwork package.
+
+The null hypothesis is defined as: The observed spatial point events (i.e distribution of origin points) are uniformly distributed over a street network in Downtown Core Planning Area.
+
+The CSR test is based on the assumption of the binomial point process which implies the hypothesis that the origin points are randomly and independently distributed over the street network.
+
+If this hypothesis is rejected, we may infer that the distribution of origin points are spatially interacting and dependent on each other; as a result, they may form non-random patterns.
+
+```{r}
+kfun_dcorigins <- kfunctions(dc_roads, 
+                             dc_sf_points,
+                             start = 0, 
+                             end = 1000, 
+                             step = 50, 
+                             width = 50, 
+                             nsim = 50, 
+                             resolution = 50,
+                             verbose = FALSE, 
+                             conf_int = 0.05)
+```
+
+Visualising the ggplot2 object of k-function by using the code chunk below:
+
+```{r}
+kfun_dcorigins$plotk
+```
+
+The blue line is the empirical network K-function of the origin points in Downtown Core planning area. The gray envelop represents the results of the 50 simulations in the interval 2.5% - 97.5%. Because the blue line does not fall below the gray area, we can infer that the origin points in Downtown Core planning area does not resemble normal distribution.
+
+# 4 Conclusion
+
+From the KDE Plots, we can see clearly that the central areas that are for work have a higher probability of having grab origin points in comparison to residential areas.
+
+Utilising spatial point patterns analysis we can analyse that the distribution of origin points are spatially interacting and dependent on each other; as a result, they may form non-random patterns.

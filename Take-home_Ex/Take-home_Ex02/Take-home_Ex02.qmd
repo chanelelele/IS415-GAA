@@ -1,0 +1,834 @@
+---
+title: "Take-home Exercise 2: Application of Spatial and Spatio-temporal Analysis Methods to Discover the Distribution of Dengue Fever in Tainan City, Taiwan"
+execute: 
+  warning: false
+  freeze: true
+date: "`r Sys.Date()`"
+---
+
+# 1 Introduction
+
+## 1.1 Setting the Scene
+
+Dengue Hemorrhagic Fever (in short dengue fever) is one of the most widespread mosquito-borne diseases in the most tropical and subtropical regions. It is an acute disease caused by dengue virus infection which is transmitted by female Aedes aegypti and Aedes albopictus mosquitoes. In 2015, Taiwan had recorded the most severe dengue fever outbreak with more than 43,000 dengue cases and 228 deaths. Since then, the annual reported dengue fever cases were maintained at the level of not more than 200 cases.
+
+# 2 Preparing the data
+
+## 2.1 Loading the packages and importing data
+
+The following R packages are used for this assignment:
+
+-   **sf:** for importing, manipulating and processing geospatial data
+
+-   **tmap:** to create thematic maps
+
+-   **tidyverse:** a family of modern R packages specially designed to meet the tasks of Data Science in R
+
+    -   **tidyr:** an R package for tidying data
+    -   **dplyr:** a grammer of data manipulation
+    -   **ggplot2:** a grammar of graphics
+
+```{r}
+pacman::p_load(readxl, sf, tidyverse, tmap, sfdep, gifski, dplyr, lubridate, ggplot2, spdep, plotly)
+```
+
+### 2.1.1 Importing Tainan Village Data
+
+TAIWAN_VILLAGE_2020: a geospatial data of village boundary of Taiwan. It is in ESRI shapefile format. The data is in Taiwan Geographic Coordinate System.
+
+```{r}
+tv <- st_read(dsn = "data/geospatial", layer = "TAINAN_VILLAGE")
+```
+
+### 2.1.2 Importing Daily Dengue Data
+
+Dengue_Daily: an aspatial data of reported dengue cases in Taiwan since 1998.
+
+```{r}
+dengue_daily <- st_read(dsn = "data/aspatial/Dengue_Daily.csv")
+```
+
+## 2.2 Preparing the Geospatial Data
+
+Firstly, to create a thematic map of the Tainan Villages dataset by adding borders to highlight the boundaries of the geographic features.
+
+```{r}
+tmap_mode("plot")
+tm_shape(tv) +
+  tm_borders()
+```
+
+We are only looking to study the villages that are confined to the D01, D02, D04, D06, D07, D08, D32 and D39 counties of Tainan City, Taiwan. Therefore, we are filtering the dataset by the variable TOWNID in order to extract only counties that we are interested in.
+
+```{r}
+tmap_mode("plot")
+tm_shape(filter(tv, tv$TOWNID == "D01" | tv$TOWNID == "D02" | tv$TOWNID == "D04" | tv$TOWNID == "D06" | tv$TOWNID == "D07" | tv$TOWNID == "D08" | tv$TOWNID == "D32" | tv$TOWNID == "D39")) +
+  tm_fill("TOWNID") +
+  tm_borders()
+```
+
+```{r}
+tv_ids <- c("D01", "D02", "D04", "D06", "D07", "D08", "D32", "D39")
+tv_counties <- subset(tv, TOWNID %in% tv_ids)
+```
+
+## 2.3 Preparing the Aspatial Data
+
+In order to make data processing more convenient, we are renaming the following columns from Chinese to English:
+
+```{r}
+dd <- dengue_daily %>% rename("Onset_Date" = "發病日",
+                              "x-coordinate" = "最小統計區中心點X",
+                              "y-coordinate" = "最小統計區中心點Y",
+                              "village" = "居住村里",
+                              "town" = "居住縣市")
+```
+
+I am only looking to study the dengue fever cases that are confined to epidemiology weeks 31-50 in the year 2023. Therefore, the dengue cases dataset is being filtered and extracted according to the time period that we are interested in. However, it is important to note that since the first day of the week in Taiwan is a Sunday, the dates that need to be extracted are as follows: **Week 31 - 50: 30 July 2023 - 16 December 2023**
+
+With reference to: http://chartsbin.com/view/41671
+
+```{r}
+dd_filter <- dd %>%
+                filter(Onset_Date >= as.Date("2023/07/30") & Onset_Date <= as.Date("2023/12/16"))
+```
+
+The following code block creates a new column in the dataset called **week**, reflecting which week the dengue fever cases belong to.
+
+```{r}
+dd_filter <- dd_filter %>%
+  mutate(year = factor(year(Onset_Date)),
+         week = week(Onset_Date)) %>%
+  filter(Onset_Date >= "2023/07/30" & Onset_Date <= "2023/12/16")
+```
+
+## 2.4 Combining the datasets
+
+Next, I merged the two datasets using a left join operation, where the village name columns serve as the key to combine the data from both datasets.
+
+```{r}
+tv_dd <- left_join(tv_counties, dd_filter, 
+                    by = c("VILLNAME" = "village"))
+```
+
+Next, I created a new dataframe that groups the tv_dd dataframe by the variable "VILLENG". It then calculates the count of observations within each group and stores it in a new column named "grp_cnt".
+
+```{r}
+village_sf <- tv_dd %>%
+  group_by(VILLENG) %>%
+  summarize(grp_cnt = n(), .groups = "drop")
+
+# View the first few rows of the new data frame
+head(village_sf)
+```
+
+Next, I created a new dataframe that groups the tv_dd dataframe by the variables "week" and "VILLENG". Similarly, it calculates the count of observations within each group and stores it in a new column named "grp_cnt".
+
+```{r}
+df <- tv_dd %>%
+  group_by(week, VILLENG) %>%
+  summarize(grp_cnt = n(), .groups = "drop")
+
+# View the first few rows of the new data frame
+head(df)
+```
+
+The first chunk of code creates a new dataframe complete_df using the expand.grid() function, which generates a data frame from all combinations of the supplied vectors or factors. In this case, it creates combinations of weeks ranging from 31 to 50 for each unique village ID ("VILLENG") extracted from the df dataframe.
+
+Then, it performs a left join with the df dataframe to fill in the grp_cnt values for each combination of week and village ID. Missing values in the grp_cnt column are replaced with 0 using the ifelse() function. Finally, it merges geometry information from the village_sf dataframe based on the VILLENG variable, resulting in the dengue_sf dataframe.
+
+```{r}
+complete_df <- expand.grid(week = 31:50, VILLENG = unique(df$VILLENG))
+
+# Left join with df to fill in grp_cnt values
+dengue_sf <- left_join(complete_df, df, by = c("week", "VILLENG")) %>%
+  mutate(grp_cnt = ifelse(is.na(grp_cnt), 0, grp_cnt))  # Replace NA values with 0
+
+# Merge geometry information from village_sf based on VILLENG
+dengue_sf <- dengue_sf %>%
+  left_join(select(village_sf, VILLENG, geometry), by = "VILLENG")
+```
+
+```{r}
+# Select geometry.y column as geometry and drop geometry.x column
+dengue_sf <- dengue_sf %>%
+  select(-geometry.x, geometry = geometry.y)
+```
+
+The following code chunk generates a bar plot using ggplot2. It visualizes the number of cases by week.
+
+```{r}
+ggplot(tv_dd, aes(x = week)) +
+  geom_bar(fill = "skyblue", color = "black") +
+  labs(title = "Number of Cases by Week",
+       x = "Week",
+       y = "Number of Cases")
+```
+
+From the bar graph, it indicates an increasing trend from week 30 to week 39. It then reached the highest number of dengue cases outbreak in week 39 before gradually decreasing all the way till week 50.
+
+According to research, this pattern is often seen in infectious disease outbreaks. It suggests that there was a period of heightened transmission leading to the peak of the outbreak, followed by a decline as control measures or natural factors that may mitigate the spread of the disease.
+
+```{r}
+ggplot(dengue_sf, aes(x = week, y = grp_cnt)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(title = "Number of Cases by Village",
+       x = "VILLENG",
+       y = "Number of Cases")
+```
+
+The following code chunk creates a thematic map that displays the distribution of dengue cases by village in Tainan, Taiwan. The color of each village on the map represents the number of dengue cases reported, with darker shades indicating higher case counts.
+
+```{r}
+tmap_mode("plot")
+tm_shape(village_sf) +
+  tm_fill("grp_cnt", 
+          style = "quantile", 
+          palette = "Blues",
+          title = "Village") +
+  tm_layout(main.title = "Distribution of Dengue Cases by Village, Tainan",
+            main.title.position = "center",
+            main.title.size = 1.2,
+            legend.height = 0.60, 
+            legend.width = 0.50,
+            frame = TRUE) +
+  tm_borders(alpha = 0.5) +
+  tm_compass(type="8star", size = 2) +
+  tm_scale_bar() +
+  tm_grid(alpha =0.2)
+```
+
+From the thematic map, it's evident that the regions experiencing the highest incidences of dengue outbreaks are concentrated in the central and southern areas of our study area. This spatial pattern suggests a clustering of dengue cases in specific geographic locations rather than a uniform distribution across the entire area.
+
+```{r}
+equal <- tm_shape(tv_dd) +
+  tm_fill("VILLENG",
+          n = 5,
+          style = "equal") +
+  tm_borders(alpha = 0.5) +
+  tm_layout(main.title = "Equal interval classification")
+
+quantile <- tm_shape(tv_dd) +
+  tm_fill("VILLENG",
+          n = 5,
+          style = "quantile") +
+  tm_borders(alpha = 0.5) +
+  tm_layout(main.title = "Equal quantile classification")
+
+tmap_arrange(equal, 
+             quantile, 
+             asp=1, 
+             ncol=2)
+```
+
+# 3 Spacetime s3 class
+
+The spacetime class links a dataframe and an sf object based on a shared location identifier column. These are referred to as the data context and the geometry context.
+
+Four important aspects to the spacetime class:
+
+-   the data: dd (a dataframe object)
+
+-   the geometry: tv_counties (an sf object)
+
+-   the location identifiers:
+
+-   the time column:
+
+```{r}
+spt <- sfdep::spacetime(
+  .data = dengue_sf,
+  .geometry = village_sf,
+  .loc_col = "VILLNAME",
+  .time_col = "week"
+)
+```
+
+```{r}
+# Convert polygons/multipolygons to points
+spt$geometry_point <- st_centroid(spt$geometry)
+```
+
+# 4 Global Spatial Autocorrelation
+
+Spatial autocorrelation is the term used to describe the presence of systematic spatial variation in a variable.
+
+**Hypotheses:**
+
+-   **Null Hypothesis:** The map suggests that the outbreak of dengue cases occurred randomly over space. (complete spatial randomness)
+
+-   **Alternative Hypothesis:** The map suggests that the outbreak of dengue cases occurred in a non-random pattern over space (spatially clustered)
+
+## 4.1 Deriving contiguity weights: Queen's method
+
+```{r}
+wm_q <- village_sf %>%
+  mutate(nb = st_contiguity(geometry),
+         wt = st_weights(nb,
+                         style = "W"),
+         .before = 1) 
+```
+
+```{r}
+wm_q
+```
+
+```{r}
+global_moran_test(wm_q$grp_cnt,
+                       wm_q$nb,
+                       wm_q$wt)
+```
+
+From the Moran I test, the statistic standard deviate value (z-value) is 8.6483. This value represents the number of standard deviations the observed Moran's I statistic deviates from the expected value under the null hypothesis of spatial randomness.
+
+Therefore, the z-value of 8.6483 and a very low p-value (\< 2.2e-16), there is strong evidence to reject the null hypothesis of spatial randomness. This suggests that the outbreaks are not randomly distributed but rather exhibit spatial clustering, where areas with high dengue activity tend to be geographically close to each other.
+
+```{r}
+set.seed(1234)
+```
+
+The following code chunk uses the global_moran_perm function that computes the global Moran's I statistic for spatial autocorrelation using permutation tests. This function conducts a permutation test to assess the significance of the Moran's I statistic.
+
+```{r}
+global_moran_perm(wm_q$grp_cnt,
+                       wm_q$nb,
+                       wm_q$wt,
+                  nsim = 99)
+```
+
+The calculated p-value of \< 2.2e-16 indicates a strong evidence against the null hypothesis of spatial randomness. Therefore, suggesting that there is a significant spatial autocorrelation present in the data.
+
+# 5 Local Spatial Autocorrelation Analysis
+
+## 5.1 Computing Contiguity Spatial Weights
+
+The following code chunk uses the poly2nb() function of the spdep package to compute contiguity weight matrices for the study area. This function builds a neighbours list based on regions with contiguous boundaries. Therefore, it computes the Queen contiguity weight matrix.
+
+```{r}
+wm_q2 <- poly2nb(village_sf, 
+                queen=TRUE)
+summary(wm_q2)
+```
+
+The summary report above shows that there are 249 area units in our Tainan study area. The most connected area unit has 22 neighbours. There are 4 area units with only 2 neighbours.
+
+## 5.2 Row-standardised weights matrix
+
+The following code chunk assigns weights to each neighbouring polygon. he nb2listw function is used to create this matrix, specifying the style as "W" for equal weighting.
+
+```{r}
+rswm_q <- nb2listw(wm_q2, 
+                   style="W", 
+                   zero.policy = TRUE)
+```
+
+The following code chunk computes local Moran's I statistics for the variable grp_cnt in the dataset village_sf, using the spatial weights matrix rswm_q previously generated. The local moran's I statistic is computed using the localmoran() function directly from the spdep package. This function calculates local Moran's I without the need for explicitly defining a spatial weights matrix. Instead, it derives the spatial weights internally based on the neighborhood structure specified by nb.
+
+```{r}
+fips <- order(village_sf$VILLENG)
+localMI <- localmoran(village_sf$grp_cnt, rswm_q)
+head(localMI)
+```
+
+The following code chunk prints the local Moran's I statistics calculated earlier in a formatted coefficient matrix. It arranges the statistics corresponding to each village (VILLENG) in the same order as the fips variable, which represents the sorted order of villages.
+
+```{r}
+printCoefmat(data.frame(
+  localMI[fips,], 
+  row.names=village_sf$VILLENG[fips]),
+  check.names=FALSE)
+```
+
+### 5.1.1 Mapping the local Moran’s I
+
+Before mapping the local Moran’s I map, the following code chunk appends the local Moran’s I dataframe (i.e. localMI) onto hunan SpatialPolygonDataFrame. The out SpatialPolygonDataFrame is called village_sf.localMI.
+
+```{r}
+village_sf.localMI <- cbind(village_sf,localMI) %>%
+  rename(Pr.Ii = Pr.z....E.Ii..)
+```
+
+### 5.1.2 Mapping local Moran’s I values
+
+Using choropleth mapping functions of tmap package, we can plot the local Moran’s I values by using the code chunks below.
+
+Note: Variable(s) "Ii" contains positive and negative values, so midpoint is set to 0. Set midpoint = NA to show the full spectrum of the color palette.
+
+```{r}
+tm_shape(village_sf.localMI) +
+  tm_fill(col = "Ii", 
+          style = "pretty",
+          palette = "RdBu",
+          title = "local moran statistics") +
+  tm_borders(alpha = 0.5)
+```
+
+The positive local Moran's I value indicates spatial clustering, suggesting that areas with similar values are close to each other on the map. Conversely, a negative local Moran's I value indicates spatial dispersion or spatial outliers.
+
+Therefore, the map visualizes the areas with positive and negative local Moran's I values, highlighting spatial clustering and spatial dispersion, respectively. Areas with positive values indicate spatial clustering, where similar values are clustered together geographically. Conversely, areas with negative values indicate spatial dispersion, where dissimilar values are scattered across the map. Thus, the map helps identify spatial patterns of similarity and dissimilarity in the dataset.
+
+### 5.1.3 Mapping local Moran’s I p-values
+
+The choropleth shows there is evidence for both positive and negative Ii values. However, it is useful to consider the p-values for each of these values, as consider above.
+
+The code chunks below produce a choropleth map of Moran’s I p-values by using functions of tmap package.
+
+```{r}
+tm_shape(village_sf.localMI) +
+  tm_fill(col = "Pr.Ii", 
+          breaks=c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+          palette="-Blues", 
+          title = "local Moran's I p-values") +
+  tm_borders(alpha = 0.5)
+```
+
+The thematic map reflects the spatial distribution of statistical significance regarding local Moran's I values across various regions. Darker shades denote areas with lower p-values, indicating higher statistical significance, implying pronounced spatial clustering or outliers. Conversely, lighter-colored regions signify higher p-values, suggesting lower statistical significance and potentially indicating randomness or spatial independence.
+
+In order to interpret the local moran value:
+
+-   **An outlier:** significant and negative if location i is associated with relatively low values in surrounding locations.
+
+-   **A cluster:** significant and positive if location i is associated with relatively high values of the surrounding locations.
+
+The thematic map provides insights into the spatial distribution of dengue outbreak cases at a local level. It indicates that, across the study area, the occurrence of dengue cases exhibits spatial randomness. However, areas with higher Moran's I p-values, representing increased spatial autocorrelation, tend to cluster together. This clustering pattern suggests that certain regions with elevated Moran's I p-values are surrounded by neighboring areas exhibiting similar levels of spatial autocorrelation. Hence, these findings imply the presence of localized clusters within the study area, amidst an overall pattern of spatial randomness in dengue outbreak occurrences.
+
+### 5.1.4 Mapping both local Moran’s I values and p-values
+
+```{r}
+localMI.map <- tm_shape(village_sf.localMI) +
+  tm_fill(col = "Ii", 
+          style = "pretty", 
+          title = "local moran statistics") +
+  tm_borders(alpha = 0.5)
+
+pvalue.map <- tm_shape(village_sf.localMI) +
+  tm_fill(col = "Pr.Ii", 
+          breaks=c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+          palette="-Blues", 
+          title = "local Moran's I p-values") +
+  tm_borders(alpha = 0.5)
+
+tmap_arrange(localMI.map, pvalue.map, asp=1, ncol=2)
+```
+
+## 5.2 Creating a LISA Cluster Map
+
+The LISA Cluster Map shows the significant locations color coded by type of spatial autocorrelation. The first step before we can generate the LISA cluster map is to plot the Moran scatterplot.
+
+### 5.2.1 Plotting Moran scatterplot
+
+```{r}
+nci <- moran.plot(village_sf$grp_cnt, rswm_q,
+                  labels=as.character(village_sf$VILLENG), 
+                  xlab="Dengue Case Count 2023", 
+                  ylab="Spatially Lag Dengue Cases Count 2023")
+```
+
+The plot is split into 4 quadrants. The top right corner belongs to areas that have a high number of dengue cases and are surrounded by other areas that have the average level of dengue cases. These are the high-high locations.
+
+For example, Chenggong Village indicates a high number of dengue cases but is surrounded by areas with a lower level of dengue cases. However, Zhonghua Village indicates a lower number of dengue cases but is surrounded by areas with a higher level of dengue outbreak cases.
+
+### 5.2.2 Plotting Moran scatterplot with standardised variable
+
+```{r}
+village_sf$Z.grp_cnt <- scale(village_sf$grp_cnt) %>% 
+  as.vector 
+```
+
+The as.vector() added to the end is to make sure that the data type we get out of this is a vector, that map neatly into out dataframe.
+
+The following code chunk plots the Moran scatterplot again by using the code chunk below.
+
+```{r}
+nci2 <- moran.plot(village_sf$Z.grp_cnt, rswm_q,
+                   labels=as.character(village_sf$VILLENG),
+                   xlab="z-Dengue Case Count 2023", 
+                   ylab="Spatially Lag z-Dengue Cases Count 2023")
+```
+
+### 5.2.3 Preparing LISA map classes
+
+The code chunks below show the steps to prepare a LISA cluster map.
+
+```{r}
+quadrant <- vector(mode="numeric",length=nrow(localMI))
+```
+
+Next, derives the spatially lagged variable of interest and centers the spatially lagged variable around its mean.
+
+```{r}
+village_sf$lag_grp_cnt <- lag.listw(rswm_q, village_sf$grp_cnt)
+DV <- village_sf$lag_grp_cnt - mean(village_sf$lag_grp_cnt)     
+```
+
+This is follow by centering the local Moran’s around the mean.
+
+```{r}
+LM_I <- localMI[,1] - mean(localMI[,1])
+```
+
+Next, we will set a statistical significance level for the local Moran.
+
+```{r}
+signif <- 0.05
+```
+
+These four command lines define the low-low (1), low-high (2), high-low (3) and high-high (4) categories.
+
+```{r}
+quadrant[DV <0 & LM_I>0] <- 1
+quadrant[DV >0 & LM_I<0] <- 2
+quadrant[DV <0 & LM_I<0] <- 3  
+quadrant[DV >0 & LM_I>0] <- 4 
+```
+
+Lastly, places non-significant Moran in the category 0.
+
+```{r}
+quadrant[localMI[,5]>signif] <- 0
+```
+
+```{r}
+quadrant <- vector(mode="numeric",length=nrow(localMI))
+village_sf$lag_grp_cnt <- lag.listw(rswm_q, village_sf$grp_cnt)
+DV <- village_sf$lag_grp_cnt - mean(village_sf$lag_grp_cnt)     
+LM_I <- localMI[,1]   
+signif <- 0.05       
+quadrant[DV <0 & LM_I>0] <- 1
+quadrant[DV >0 & LM_I<0] <- 2
+quadrant[DV <0 & LM_I<0] <- 3  
+quadrant[DV >0 & LM_I>0] <- 4    
+quadrant[localMI[,5]>signif] <- 0
+```
+
+### 5.2.4 Plotting LISA map
+
+The following code chunk generates a thematic map displaying the spatial clustering patterns of dengue cases using Local Indicators of Spatial Association (LISA) analysis.
+
+```{r}
+village_sf.localMI$quadrant <- quadrant
+colors <- c("#ffffff", "#2c7bb6", "#abd9e9", "#fdae61", "#d7191c")
+clusters <- c("insignificant", "low-low", "low-high", "high-low", "high-high")
+
+tm_shape(village_sf.localMI) +
+  tm_fill(col = "quadrant", 
+          style = "cat", 
+          palette = colors[c(sort(unique(quadrant)))+1], 
+          labels = clusters[c(sort(unique(quadrant)))+1],
+          popup.vars = c("")) +
+  tm_view(set.zoom.limits = c(11,17)) +
+  tm_borders(alpha=0.5)
+```
+
+From the graph, we can infer the areas that according to their classified color:
+
+-   **White (Insignificant)**: These areas represent locations where the local spatial autocorrelation is not statistically significant.
+
+-   **Blue (Low-Low)**: These areas indicate clusters where low values of the variable of interest are surrounded by neighboring areas with similarly low values.
+
+-   **Light Blue (Low-High)**: These areas denote locations where low values of the variable of interest are surrounded by neighboring areas with high values.
+
+-   **Red (High-High)**: These areas represent clusters where high values of the variable of interest are surrounded by neighboring areas with similarly high values.
+
+The map shows that the
+
+```{r}
+grpcnt <- qtm(village_sf, "grp_cnt")
+
+village_sf.localMI$quadrant <- quadrant
+colors <- c("#ffffff", "#2c7bb6", "#abd9e9", "#fdae61", "#d7191c")
+clusters <- c("insignificant", "low-low", "low-high", "high-low", "high-high")
+
+LISAmap <- tm_shape(village_sf.localMI) +
+  tm_fill(col = "quadrant", 
+          style = "cat", 
+          palette = colors[c(sort(unique(quadrant)))+1], 
+          labels = clusters[c(sort(unique(quadrant)))+1],
+          popup.vars = c("")) +
+  tm_view(set.zoom.limits = c(11,17)) +
+  tm_borders(alpha=0.5)
+
+tmap_arrange(grpcnt, LISAmap, 
+             asp=1, ncol=2)
+```
+
+```{r}
+dengue_sf_tibble <- as_tibble(dengue_sf)
+```
+
+The following code chunk calculates local Moran's I statistics for each observation using the local_moran function.
+
+## 5.3 Computing local Moran’s I (using local_moran() function)
+
+in this alternative method, the local_moran() function from the spdep package is utilized. This function directly computes the local Moran's I statistic for each observation in the dataset.
+
+```{r}
+lisa <- wm_q %>% 
+  mutate(local_moran = local_moran(
+    grp_cnt, nb, wt, nsim = 99),
+         .before = 1) %>%
+  unnest(local_moran)
+```
+
+## 6.2 Visualising local Moran’s I
+
+The following code chunk generates a thematic map visualizing the local Moran's I statistics of the "Cases Count" variable.
+
+```{r}
+tmap_mode("plot")
+tm_shape(lisa) +
+  tm_fill("ii") + 
+  tm_borders(alpha = 0.5) +
+  tm_view(set.zoom.limits = c(6,8)) +
+  tm_layout(main.title = "local Moran's I of Cases Count",
+            main.title.size = 0.8)
+```
+
+From the map, it can be observed that the areas in green (positive values) of the local Moran's I statistic suggest spatial clustering. This suggests that neighbouring areas tend to have similar values.
+
+In contrast, the areas in red/orange (negative values) suggest spatial dispersion or dissimilarity. This suggests that neighboring areas tend to have dissimilar values.
+
+From the map, it can be observed that the majority of the regions fall into the range of 0-1 and 0-(-1), thus suggesting that the observations exhibit spatial randomness or no spatial clustering. However, there are more regions that exhibits spatial clustering in comparison to regions that do not.
+
+The following map the p-values associated with the local Moran's I statistic. These p-values indicate the significance of spatial autocorrelation.
+
+```{r}
+tmap_mode("plot")
+tm_shape(lisa) +
+  tm_fill("p_ii_sim") + 
+  tm_borders(alpha = 0.5) +
+   tm_layout(main.title = "p-value of local Moran's I",
+            main.title.size = 0.8)
+```
+
+The lower p-values suggest stronger evidence against the null hypothesis of spatial randomness, indicating significant spatial clustering or dispersion. Conversely, higher p-values suggest weaker evidence against the null hypothesis, indicating spatial randomness or non-significant spatial patterns.
+
+```{r}
+tmap_mode("plot")
+map1 <- tm_shape(lisa) +
+  tm_fill("ii") + 
+  tm_borders(alpha = 0.5) +
+  tm_view(set.zoom.limits = c(6,8)) +
+  tm_layout(main.title = "local Moran's I of GDPPC",
+            main.title.size = 0.8)
+
+map2 <- tm_shape(lisa) +
+  tm_fill("p_ii",
+          breaks = c(0, 0.001, 0.01, 0.05, 1),
+              labels = c("0.001", "0.01", "0.05", "Not sig")) + 
+  tm_borders(alpha = 0.5) +
+  tm_layout(main.title = "p-value of local Moran's I",
+            main.title.size = 0.8)
+
+tmap_arrange(map1, map2, ncol = 2)
+```
+
+```{r}
+lisa_sig <- lisa  %>%
+  filter(p_ii < 0.05)
+tmap_mode("plot")
+tm_shape(lisa) +
+  tm_polygons() +
+  tm_borders(alpha = 0.5) +
+tm_shape(lisa_sig) +
+  tm_fill("mean") + 
+  tm_borders(alpha = 0.4)
+```
+
+```{r}
+# Convert polygons/multipolygons to points
+village_sf$geometry_point <- st_centroid(village_sf$geometry)
+
+# Verify the result
+print(village_sf)
+```
+
+```{r}
+wm_idw <- village_sf %>%
+  mutate(nb = st_contiguity(geometry),
+         wts = st_inverse_distance(nb, geometry_point,
+                                   scale = 1,
+                                   alpha = 1),
+         .before = 1)
+```
+
+```{r}
+HCSA <- wm_idw %>% 
+  mutate(local_Gi = local_gstar_perm(
+    grp_cnt, nb, wt, nsim = 99),
+         .before = 1) %>%
+  unnest(local_Gi)
+```
+
+```{r}
+tmap_mode("plot")
+tm_shape(HCSA) +
+  tm_fill("gi_star") + 
+  tm_borders(alpha = 0.5) +
+  tm_view(set.zoom.limits = c(6,8))
+```
+
+```{r}
+tmap_mode("plot")
+tm_shape(HCSA) +
+  tm_fill("p_sim") + 
+  tm_borders(alpha = 0.5)
+```
+
+```{r}
+tmap_mode("plot")
+map1 <- tm_shape(HCSA) +
+  tm_fill("gi_star") + 
+  tm_borders(alpha = 0.5) +
+  tm_view(set.zoom.limits = c(6,8)) +
+  tm_layout(main.title = "Gi* of GDPPC",
+            main.title.size = 0.8)
+
+map2 <- tm_shape(HCSA) +
+  tm_fill("p_value",
+          breaks = c(0, 0.001, 0.01, 0.05, 1),
+              labels = c("0.001", "0.01", "0.05", "Not sig")) + 
+  tm_borders(alpha = 0.5) +
+  tm_layout(main.title = "p-value of Gi*",
+            main.title.size = 0.8)
+
+tmap_arrange(map1, map2, ncol = 2)
+```
+
+```{r}
+HCSA_sig <- HCSA  %>%
+  filter(p_sim < 0.05)
+tmap_mode("plot")
+tm_shape(HCSA) +
+  tm_polygons() +
+  tm_borders(alpha = 0.5) +
+tm_shape(HCSA_sig) +
+  tm_fill("gi_star") + 
+  tm_borders(alpha = 0.4)
+```
+
+# 6 Emerging Hot Spot Analysis: sfdep methods
+
+## 6.1 Creating a Time Series Cube
+
+```{r}
+grp_cnt_st <- spacetime(dengue_sf_tibble, village_sf,
+                      .loc_col = "VILLENG",
+                      .time_col = "week")
+```
+
+```{r}
+is_spacetime_cube(grp_cnt_st)
+```
+
+```{r}
+# Convert polygons/multipolygons to points
+grp_cnt_st$geometry_point <- st_centroid(grp_cnt_st$geometry)
+```
+
+## 6.2 Computing Gi\*
+
+The code chunk below will be used to identify neighbors and to derive an inverse distance weights.
+
+```{r}
+grp_cnt_nb <- grp_cnt_st %>%
+  activate("geometry") %>%
+  mutate(nb = include_self(st_contiguity(geometry)),
+         wt = st_inverse_distance(nb, geometry_point,
+                                  scale = 1,
+                                  alpha = 1),
+         .before = 1) %>%
+  set_nbs("nb") %>%
+  set_wts("wt")
+```
+
+These new columns are used to manually calculate the local Gi\* for each location. We can do this by grouping by week and using local_gstar_perm() of sfdep package. After which, we use unnest() to unnest gi_star column of the newly created gi_starts data.frame.
+
+```{r}
+gi_stars <- grp_cnt_nb %>% 
+  group_by(week) %>% 
+  mutate(gi_star = local_gstar_perm(
+    grp_cnt, nb, wt)) %>% 
+  tidyr::unnest(gi_star)
+```
+
+## 6.3 Mann-Kendall Test
+
+With these Gi\* measures we can then evaluate each location for a trend using the Mann-Kendall test. The code chunk below uses Sanmin Vil.
+
+```{r}
+smv <- gi_stars %>% 
+  ungroup() %>% 
+  filter(VILLENG == "Sanmin Vil.") |> 
+  select(VILLENG, week, gi_star)
+```
+
+```{r}
+ggplot(data = smv, 
+       aes(x = week, 
+           y = gi_star)) +
+  geom_line() +
+  theme_light()
+```
+
+```{r}
+p <- ggplot(data = smv, 
+       aes(x = week, 
+           y = gi_star)) +
+  geom_line() +
+  theme_light()
+
+ggplotly(p)
+```
+
+```{r}
+#install.packages("Kendall")
+```
+
+```{r}
+smv %>%
+  summarise(mk = list(
+    unclass(
+      Kendall::MannKendall(gi_star)))) %>% 
+  tidyr::unnest_wider(mk)
+```
+
+In the above result, sl is the p-value. This result tells us that there is an upward but insignificant trend.
+
+Now to replicate this for each location by using group_by() of dplyr package.
+
+```{r}
+ehsa <- gi_stars %>%
+  group_by(VILLENG) %>%
+  summarise(mk = list(
+    unclass(
+      Kendall::MannKendall(gi_star)))) %>%
+  tidyr::unnest_wider(mk)
+```
+
+## 6.4 Arrange to show significant emerging hot/cold spots
+
+```{r}
+emerging <- ehsa %>% 
+  arrange(sl, abs(tau)) %>% 
+  slice(1:5)
+```
+
+## 6.5 Performing Emerging Hotspot Analysis
+
+Lastly, to perform EHSA analysis by using emerging_hotspot_analysis() of sfdep package. It takes a spacetime object x (i.e. grp_cnt_st), and the quoted name of the variable of interest (i.e. grp_cnt) for .var argument. The k argument is used to specify the number of time lags which is set to 1 by default. Lastly, nsim map numbers of simulation to be performed.
+
+```{r}
+grpcnt_st <- grp_cnt_st[, !colnames(grp_cnt_st) %in% "VILLENG", drop = FALSE]
+```
+
+```{r}
+#ehsa <- emerging_hotspot_analysis(
+#  x = grpcnt_st, 
+#  .var = "grp_cnt", 
+#  k = 1, 
+#  nsim = 99
+#)
+```
+
+note: i couldnt resolve the error here...
