@@ -121,6 +121,11 @@ java_eq_left <- st_join(west_java, java_earthq) %>%
 ```
 
 ```{r}
+unique_values <- unique(java_eq_left$ADM2_EN.x)
+print(unique_values)
+```
+
+```{r}
 tmap_mode('view')
 
 # Define basemaps
